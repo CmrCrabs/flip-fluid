@@ -109,8 +109,6 @@ fn model(app: &App) -> Model {
     
     // calculate cell centres for every cell
     let top_left = Vec2::new(-(inner_dimensions.0 / 2.0), inner_dimensions.1 / 2.0);
-    println!("top left: {:?}", top_left);
-    println!("inner dimensions: {:?}", inner_dimensions);
     let mut i = 0;
     for row in &mut model.scene.cells {
         let mut j = 0;
@@ -119,13 +117,11 @@ fn model(app: &App) -> Model {
                 top_left.x + (j as f32 * model.scene.cell_length) + (model.scene.cell_length / 2.0),
                 top_left.y - (i as f32 * model.scene.cell_length) - (model.scene.cell_length / 2.0),
             );
-            //println!("centre: {:?}", cell.centre);
             j += 1;
         }
         i += 1;
     }
 
-    println!("p1 pos: {:?}", model.scene.cells[0][0].centre);
     model
 }
 
@@ -143,7 +139,6 @@ fn view(app: &App, model: &Model, frame: Frame) {
         for cell in row {
             match cell.kind {
                 CellType::Water => {
-                    //println!("x: {:?}\ny: {:?}", cell.centre.x, cell.centre.y);
                     draw.ellipse()
                         .color(AQUAMARINE)
                         .radius(model.scene.particle_radius)
