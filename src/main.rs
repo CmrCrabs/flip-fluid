@@ -1,12 +1,11 @@
 use nannou::prelude::*;
-use glam::Vec2;
+use glam::{Vec2, UVec2};
 use rand::prelude::*;
 
 struct Model {
     _window: window::Id,
     scene: Scene,
 }
-
 
 #[derive(Default)]
 #[derive(Clone)]
@@ -18,11 +17,21 @@ enum CellType {
     Water,
 }
 
+
+
 #[derive(Default)]
-#[derive(Clone)]
-struct Cell {
-    kind: CellType,
-    centre: Vec2,
+struct Grid {
+    types: Vec<CellType>,
+    velocities: Vec<Velocities>,
+    size: UVec2,
+    vel_size: UVec2,
+}
+
+#[derive(Default)]
+#[derive(Clone, Copy)]
+struct Velocities {
+    velocity: Vec2,
+    _prev_velocity: Vec2,
 }
 
 #[derive(Clone)]
@@ -50,16 +59,10 @@ struct Scene {
     cell_length: f32,
 
     //calculated
-    grid_width: u32,
-    grid_height: u32,
     particle_radius: f32,
 
     // grid
-    cells: Vec<Vec<Cell>>,
-    velocities_x: Vec<Vec<f32>>,
-    velocities_y: Vec<Vec<f32>>,
-    velocities_x_prev: Vec<Vec<f32>>,
-    velocities_y_prev: Vec<Vec<f32>>,
+    grid: Grid,
 
     // particles
     particles: Vec<Particle>,
@@ -69,25 +72,19 @@ impl Default for Scene {
     fn default() -> Self {
         Scene {
             // set
-            gravity: Vec2::new(0.0, -9.81),
+            gravity: Vec2::new(0.0, -0.81),
             dt: 1.0 / 10.0,
             _flip_pic_ratio: 0.8,
             _over_relaxation: 1.9,
             initial_water_percent: 0.4,
             initial_particles_per_cell: 3,
             cell_length: 15.0,
-            particle_radius: 3.0,
+            particle_radius: 2.0,
 
             // calculated
-            grid_width: 0,
-            grid_height: 0,
-            cells: vec![vec![]],
+            grid: Grid::default(),
             particles: vec![],
             _obstacle: _Obstacle::default(),
-            velocities_x: vec![vec![]],
-            velocities_y: vec![vec![]],
-            velocities_x_prev: vec![vec![]],
-            velocities_y_prev: vec![vec![]],
         }
     }
 }
@@ -117,6 +114,7 @@ fn update(_app: &App, model: &mut Model, _update: Update) {
     model.scene.handle_collisions();
     // transfer velocities particles ->  grid // update cell contains particle
     // make incompressible
+    model.scene.update_celltype();
     model.scene.g_p_transfer_velocities();// update cell contains particle
     // compute density
     // color cell by particle density
@@ -129,26 +127,33 @@ fn view(app: &App, model: &Model, frame: Frame) {
     let draw = app.draw();
     draw.background().color(BLACK);
     let inner_dimensions = app.main_window().inner_size_points();
+    let h = model.scene.cell_length;
+
+    for y in 0..model.scene.grid.size.y {
+        for x in 0..model.scene.grid.size.x {
+            match model.scene.grid.get_type(x,y) {
+                CellType::Solid => {
+                    draw.rect()
+                        .color(SLATEGRAY)
+                        .w_h(h, h)
+                        .x_y(((x as f32 + 0.5) * h) - 0.5 * inner_dimensions.0, ((y as f32 + 0.5) * h) - 0.5 * inner_dimensions.1);
+                },
+                CellType::Water => {
+                    draw.rect()
+                        .color(BLUE)
+                        .w_h(h, h)
+                        .x_y(((x as f32 + 0.5) * h) - 0.5 * inner_dimensions.0, ((y as f32 + 0.5) * h) - 0.5 * inner_dimensions.1);
+                },
+                _ => {},
+            }
+        }
+    }
 
     for particle in &model.scene.particles {
         draw.ellipse()
             .color(AQUAMARINE)
             .radius(model.scene.particle_radius)
             .x_y(particle.position.x - 0.5 * inner_dimensions.0, particle.position.y - 0.5 * inner_dimensions.1);
-    }
-
-    for row in &model.scene.cells {
-        for cell in row {
-            match cell.kind {
-                CellType::Solid => {
-                    draw.rect()
-                        .color(SLATEGRAY)
-                        .w_h(model.scene.cell_length, model.scene.cell_length)
-                        .x_y(cell.centre.x - 0.5 * inner_dimensions.0, cell.centre.y - 0.5 * inner_dimensions.1);
-                },
-                _ => {},
-            }
-        }
     }
 
     draw.to_frame(app, &frame).unwrap();
@@ -158,52 +163,39 @@ impl Scene {
     fn initialise_scene(&mut self, app: &App) {
         let inner_dimensions = app.main_window().inner_size_points();
 
-        // create initial dimensions as even number
-        self.grid_width = (inner_dimensions.0 / self.cell_length).floor() as u32; 
-        if self.grid_width % 2 != 0 { self.grid_width -= 1; }
+        // create initial dimensions of grids, ensuring its even
+        self.grid.size.x = (inner_dimensions.0 / self.cell_length).floor() as u32; 
+        if self.grid.size.x % 2 != 0 { self.grid.size.x -= 1; }
 
-        self.grid_height = (inner_dimensions.1 / self.cell_length).floor() as u32; 
-        if self.grid_height % 2 != 0 { self.grid_height -= 1; }
+        self.grid.size.y = (inner_dimensions.1 / self.cell_length).floor() as u32; 
+        if self.grid.size.y % 2 != 0 { self.grid.size.y -= 1; }
 
-        self.cells = vec![vec![Cell::default(); self.grid_width as usize]; self.grid_height as usize];
-       
-        // initialise velocity fields 
-        self.velocities_x = vec![vec![0.0; self.grid_width as usize + 1]; self.grid_height as usize + 1];
-        self.velocities_y = vec![vec![0.0; self.grid_width as usize + 1]; self.grid_height as usize + 1];
-        self.velocities_x_prev = vec![vec![0.0; self.grid_width as usize + 1]; self.grid_height as usize + 1];
-        self.velocities_y_prev = vec![vec![0.0; self.grid_width as usize + 1]; self.grid_height as usize + 1];
+        self.grid.vel_size.x = self.grid.size.x + 1;
+        self.grid.vel_size.y = self.grid.size.y + 1;
 
-        // calculate cell centres for every cell
-        let mut i = 0;
-        for row in &mut self.cells {
-            let mut j = 0;
-            for cell in row {
-                cell.centre = Vec2::new(
-                    (j as f32 * self.cell_length) + (self.cell_length / 2.0),
-                    (i as f32 * self.cell_length) + (self.cell_length / 2.0),
-                );
-                j += 1;
-            }
-            i += 1;
-        }
-
+        // initialise grid(s)
+        self.grid.velocities = vec![
+            Velocities {
+                velocity: Vec2::ZERO,
+                _prev_velocity: Vec2::ZERO,
+            }; 
+            ((self.grid.size.x + 1) * (self.grid.size.y + 1)) as usize
+        ];
+        self.grid.types = vec![CellType::default(); (self.grid.size.x * self.grid.size.y) as usize];
 
         // initialise particles
-        let initial_water_rows = (self.initial_water_percent * (self.grid_height as f32 - 3.0)).floor() as u32;
-        for i in 0..initial_water_rows {
-            let mut j = 0;
-            for cell in &mut self.cells[(self.grid_height - 3 - i) as usize] {
-                if j == 0 || j == self.grid_width - 1 { j += 1; continue; }
-                if j == 1 || j == self.grid_width - 2 { j += 1; continue; }
+        let initial_water_rows = (self.initial_water_percent * (self.grid.size.y as f32 - 3.0)).floor() as u32;
+        for n in 3..initial_water_rows + 3 {
 
-                let half_len = self.cell_length * 0.5;
-
+            for x in 3..(self.grid.size.x - 3) {
+                let h = self.cell_length;
                 let mut rng = rand::thread_rng();
+
                 for _ in 0..self.initial_particles_per_cell {
                     let particle = Particle {
                         position: Vec2::new(
-                            rng.gen_range(cell.centre.x - half_len..cell.centre.x + half_len),
-                            rng.gen_range(cell.centre.y - half_len..cell.centre.y + half_len),
+                            rng.gen_range((x as f32 ) * h..(x as f32 + 1.0) * h),
+                            rng.gen_range((self.grid.size.y as f32 - n as f32) * h..(self.grid.size.y as f32 - n as f32 + 1.0) * h),
                         ),
                         velocity: Vec2::new(
                             0.0,
@@ -212,20 +204,15 @@ impl Scene {
                     };
                     self.particles.push(particle);
                 }
-                j += 1;
             }
         }
 
         // initialise border walls 
-        let mut i = 0;
-        for row  in &mut self.cells {
-            let mut j = 0;
-            for cell in row {
-                if i == 0 || i == self.grid_height - 1 { cell.kind = CellType::Solid; }
-                if j == 0 || j == self.grid_width - 1 { cell.kind = CellType::Solid; }
-                j += 1;
+        for y in 0..self.grid.size.y {
+            for x in 0..self.grid.size.x {
+                if x == 0 || x == self.grid.size.x - 1 { *self.grid.get_type_mut(x,y) = CellType::Solid; }
+                if y == 0 || y == self.grid.size.y - 1 { *self.grid.get_type_mut(x,y) = CellType::Solid; }
             }
-            i += 1;
         }
     }
 
@@ -246,8 +233,8 @@ impl Scene {
             let mut y = particle.position.y;
             let min_x = 0.0 + self.cell_length + 0.5 * self.particle_radius;
             let min_y = 0.0 + self.cell_length + 0.5 * self.particle_radius;
-            let max_x = self.grid_width as f32 * self.cell_length - 1.0 * self.cell_length;
-            let max_y = self.grid_height as f32 * self.cell_length - 1.0 * self.cell_length;
+            let max_x = self.grid.size.x as f32 * self.cell_length - 1.0 * self.cell_length;
+            let max_y = self.grid.size.y as f32 * self.cell_length - 1.0 * self.cell_length;
 
             if x < min_x {
                 x = min_x;
@@ -268,57 +255,126 @@ impl Scene {
             particle.position.x = x;
             particle.position.y = y;
         }
-
     }
 
     // grid -> particle
     fn g_p_transfer_velocities(&mut self) {
         for particle in &mut self.particles {
-            // transfer y component
-            let h = self.cell_length;
-            let local_p = Vec2::new(particle.position.x, particle.position.y - (h / 2.0));
-            let x_c = (local_p.x / h).floor() as usize;
-            let y_c = (local_p.y / h).floor() as usize;
+            for dimension in 0..1 {
 
-            let dx = local_p.x - x_c as f32 * h;
-            let dy = local_p.y - y_c as f32 * h;
+                let h = self.cell_length;
 
-            let mut w1 = (1.0 - dx / h) * (1.0 - dy / h);
-            let mut w2 = (dx / h)  * (1.0 - dy / h);
-            let mut w3 = (dx / h) * (dy / h);
-            let mut w4 = (1.0 -  dx / h) * (dy / h);
+                let local_p = match dimension { 
+                    0 => Vec2::new(particle.position.x + (h / 2.0), particle.position.y),
+                    _ => Vec2::new(particle.position.x, particle.position.y - (h / 2.0)),
+                };
 
-            let mut v1 = self.velocities_y[y_c][x_c];
-            let mut v2 = self.velocities_y[y_c][x_c + 1];
-            let mut v3 = self.velocities_y[y_c + 1][x_c + 1];
-            let mut v4 = self.velocities_y[y_c + 1][x_c];
+                let x_c = (local_p.x / h).floor();
+                let y_c = (local_p.y / h).floor();
+                let c = UVec2::new(x_c as u32, y_c as u32);
 
-            // check if non water cells, then dont include in subsequent calcs
-            if self.cells[y_c - 1][x_c - 1].kind != CellType::Water
-            || self.cells[y_c - 1][x_c].kind != CellType::Water 
-            || self.cells[y_c][x_c - 1].kind != CellType::Water {
-                v1 = 0.0; w1 = 0.0;
+                let dx = local_p.x - c.x as f32 * h;
+                let dy = local_p.y - c.x as f32 * h;
+
+                let mut w1 = (1.0 - dx / h) * (1.0 - dy / h);
+                let mut w2 = (dx / h)  * (1.0 - dy / h);
+                let mut w3 = (dx / h) * (dy / h);
+                let mut w4 = (1.0 -  dx / h) * (dy / h);
+
+                let mut v1 = match dimension {
+                    0 => self.grid.get_vel(c.x, c.y).velocity.x,
+                    _ => self.grid.get_vel(c.x, c.y).velocity.y,
+                };
+                let mut v2 = match dimension {
+                    0 => self.grid.get_vel(c.x + 1, c.y).velocity.x,
+                    _ => self.grid.get_vel(c.x + 1, c.y).velocity.y,
+                };
+                let mut v3 = match dimension {
+                    0 => self.grid.get_vel(c.x + 1, c.y + 1).velocity.x,
+                    _ => self.grid.get_vel(c.x + 1, c.y + 1).velocity.y,
+                };
+                let mut v4 = match dimension {
+                    0 => self.grid.get_vel(c.x, c.y + 1).velocity.x,
+                    _ => self.grid.get_vel(c.x, c.y + 1).velocity.y,
+                };
+
+                // check if non water cells, then dont include in subsequent calc
+
+                if self.grid.get_type(c.x - 1, c.y - 1) != CellType::Water
+                || self.grid.get_type(c.x, c.y - 1) != CellType::Water
+                || self.grid.get_type(c.x - 1, c.y) != CellType::Water {
+                    //v1 = 0.0; w1 = 0.0;
+                }
+                if self.grid.get_type(c.x, c.y - 1) != CellType::Water
+                || self.grid.get_type(c.x + 1, c.y - 1) != CellType::Water
+                || self.grid.get_type(c.x + 1, c.y) != CellType::Water {
+                    //v2 = 0.0; w2 = 0.0;
+                }
+                if self.grid.get_type(c.x + 1, c.y) != CellType::Water
+                || self.grid.get_type(c.x + 1, c.y + 1) != CellType::Water
+                || self.grid.get_type(c.x, c.y + 1) != CellType::Water {
+                    //v3 = 0.0; w3 = 0.0;
+                }
+                if self.grid.get_type(c.x, c.y + 1) != CellType::Water
+                || self.grid.get_type(c.x - 1, c.y + 1) != CellType::Water
+                || self.grid.get_type(c.x - 1, c.y) != CellType::Water {
+                    //v4 = 0.0; w4 = 0.0;
+                }
+
+
+
+                // I think error is bcs havent implemented rest so v1 has no value?
+                println!("================================");
+                print!("v1: {:?} ", v1);
+                print!("v2: {:?} ", v2);
+                print!("v3: {:?} ", v3);
+                print!("v4: {:?} ", v4);
+                print!("\nw1: {:?} ", w1);
+                print!("w2: {:?} ", w2);
+                print!("w3: {:?} ", w3);
+                print!("w4: {:?} ", w4);
+                let vp = (v1 * w1 + v2 * w2 + v3 * w3 + v4 * w4) / (w1 + w2 + w3 + w4);
+                println!("vp: {:?}", vp);
+
+
+                match dimension {
+                    0 => particle.velocity.x = vp,
+                    _ => particle.velocity.y = vp,
+                };
             }
-            if self.cells[y_c - 1][x_c].kind != CellType::Water
-            || self.cells[y_c - 1][x_c + 1].kind != CellType::Water 
-            || self.cells[y_c][x_c + 1].kind != CellType::Water {
-                v2 = 0.0; w2 = 0.0;
-            }
-            if self.cells[y_c][x_c + 1].kind != CellType::Water
-            || self.cells[y_c + 1][x_c + 1].kind != CellType::Water 
-            || self.cells[y_c + 1][x_c].kind != CellType::Water {
-                v3 = 0.0; w3 = 0.0;
-            }
-            if self.cells[y_c + 1][x_c].kind != CellType::Water
-            || self.cells[y_c + 1][x_c - 1].kind != CellType::Water 
-            || self.cells[y_c][x_c - 1].kind != CellType::Water {
-                v4 = 0.0; w4 = 0.0;
-            }
-            let vp = (v1 * w1 + v2 * w2 + v3 * w3 + v4 * w4) / (w1 + w2 + w3 + w4);
-
-            particle.velocity.y = vp;
-
-            //todo set cell types
         }
+    }
+
+    fn update_celltype(&mut self) {
+        for y in 0..self.grid.size.y {
+            for x in 0..self.grid.size.x {
+                if self.grid.get_type(x, y) != CellType::Solid {
+                    *self.grid.get_type_mut(x, y) = CellType::Air;
+                }
+            }
+        }
+        for particle in &self.particles {
+            let x_c = (particle.position.x / self.cell_length).floor();
+            let y_c = (particle.position.y / self.cell_length).floor();
+            *self.grid.get_type_mut(x_c as u32, y_c as u32) = CellType::Water;
+        }
+    } 
+}
+
+
+impl Grid {
+    fn get_type(&self, i: u32, j: u32) -> CellType {
+        self.types[(i + j * self.size.x) as usize].clone()
+    }
+    fn get_type_mut(&mut self, i: u32, j: u32) -> &mut CellType {
+        &mut self.types[(i + j * self.size.x) as usize]
+    }
+
+    fn get_vel(&self, i: u32, j: u32) -> Velocities {
+        self.velocities[(i + j * self.vel_size.x) as usize]
+    }
+
+    fn _get_vel_mut(&mut self, i: u32, j: u32) -> &mut Velocities {
+        &mut self.velocities[(i + j * self.vel_size.x) as usize]
     }
 }
