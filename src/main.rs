@@ -1,15 +1,12 @@
-use std::ptr::copy_nonoverlapping;
-
 use nannou::prelude::*;
 use glam::Vec2;
-use rand::{prelude::*, seq::index};
+use rand::prelude::*;
 
 struct Model {
     _window: window::Id,
     scene: Scene,
 }
 
-type Grid = Vec<Vec<Cell>>;
 
 #[derive(Default)]
 #[derive(Clone)]
@@ -26,9 +23,6 @@ enum CellType {
 struct Cell {
     kind: CellType,
     centre: Vec2,
-    velocity: Vec2,
-    q: Vec4,
-    r: Vec4,
 }
 
 #[derive(Clone)]
@@ -39,35 +33,43 @@ struct Particle {
 
 #[derive(Default)]
 struct _Obstacle {
-    position: Vec2,
-    velocity: Vec2,
-    radius: f32,
+    _position: Vec2,
+    _velocity: Vec2,
+    _radius: f32,
 }
 
 struct Scene {
-    // set
+    // parameters
     gravity: Vec2,
     dt: f32,
     _flip_pic_ratio: f32,
     _over_relaxation: f32,
     initial_water_percent: f32,
     initial_particles_per_cell: u32,
+    _obstacle: _Obstacle,
     cell_length: f32,
 
     //calculated
     grid_width: u32,
     grid_height: u32,
-    cells: Grid,
-    particles: Vec<Particle>,
     particle_radius: f32,
-    _obstacle: _Obstacle,
+
+    // grid
+    cells: Vec<Vec<Cell>>,
+    velocities_x: Vec<Vec<f32>>,
+    velocities_y: Vec<Vec<f32>>,
+    velocities_x_prev: Vec<Vec<f32>>,
+    velocities_y_prev: Vec<Vec<f32>>,
+
+    // particles
+    particles: Vec<Particle>,
 }
 
 impl Default for Scene {
     fn default() -> Self {
         Scene {
             // set
-            gravity: Vec2::new(0.0, -0.00),
+            gravity: Vec2::new(0.0, -9.81),
             dt: 1.0 / 10.0,
             _flip_pic_ratio: 0.8,
             _over_relaxation: 1.9,
@@ -82,6 +84,10 @@ impl Default for Scene {
             cells: vec![vec![]],
             particles: vec![],
             _obstacle: _Obstacle::default(),
+            velocities_x: vec![vec![]],
+            velocities_y: vec![vec![]],
+            velocities_x_prev: vec![vec![]],
+            velocities_y_prev: vec![vec![]],
         }
     }
 }
@@ -100,34 +106,21 @@ fn model(app: &App) -> Model {
         _window: app.new_window().view(view).build().unwrap(),
         scene: Scene::default(),
     };
-
     model.scene.initialise_scene(app);
-
     model
 }
 
 
 // frame by frame update
 fn update(_app: &App, model: &mut Model, _update: Update) {
-
     model.scene.integrate_particles();
-
     model.scene.handle_collisions();
-
-    // velocity transfer particles -> grid
-    // update cell contains particle
-
-    model.scene.p_g_transfer_velocities();
-
-    // incompressible
-
-    // velocity transfer grid -> particles
-
+    // transfer velocities particles ->  grid // update cell contains particle
+    // make incompressible
+    model.scene.g_p_transfer_velocities();// update cell contains particle
     // compute density
-    
     // color cell by particle density
     // give cells a color value
-    
     // white least dense -> dark blue most dense
 }
 
@@ -135,10 +128,6 @@ fn update(_app: &App, model: &mut Model, _update: Update) {
 fn view(app: &App, model: &Model, frame: Frame) {
     let draw = app.draw();
     draw.background().color(BLACK);
-
-    //very dumb, simulation must be in positive space,but nannou defaults to centre 0,0 
-    //so translating by thing so it is visible 
-
     let inner_dimensions = app.main_window().inner_size_points();
 
     for particle in &model.scene.particles {
@@ -169,7 +158,7 @@ impl Scene {
     fn initialise_scene(&mut self, app: &App) {
         let inner_dimensions = app.main_window().inner_size_points();
 
-        // create initial scene values
+        // create initial dimensions as even number
         self.grid_width = (inner_dimensions.0 / self.cell_length).floor() as u32; 
         if self.grid_width % 2 != 0 { self.grid_width -= 1; }
 
@@ -178,6 +167,12 @@ impl Scene {
 
         self.cells = vec![vec![Cell::default(); self.grid_width as usize]; self.grid_height as usize];
        
+        // initialise velocity fields 
+        self.velocities_x = vec![vec![0.0; self.grid_width as usize + 1]; self.grid_height as usize + 1];
+        self.velocities_y = vec![vec![0.0; self.grid_width as usize + 1]; self.grid_height as usize + 1];
+        self.velocities_x_prev = vec![vec![0.0; self.grid_width as usize + 1]; self.grid_height as usize + 1];
+        self.velocities_y_prev = vec![vec![0.0; self.grid_width as usize + 1]; self.grid_height as usize + 1];
+
         // calculate cell centres for every cell
         let mut i = 0;
         for row in &mut self.cells {
@@ -191,6 +186,7 @@ impl Scene {
             }
             i += 1;
         }
+
 
         // initialise particles
         let initial_water_rows = (self.initial_water_percent * (self.grid_height as f32 - 3.0)).floor() as u32;
@@ -243,6 +239,7 @@ impl Scene {
     fn handle_collisions(&mut self) {
         for particle in &mut self.particles {
             // handle collision with obstacle
+            // TODO
 
             // handle collision with walls
             let mut x = particle.position.x;
@@ -274,52 +271,54 @@ impl Scene {
 
     }
 
-    // particle -> grid
-    fn p_g_transfer_velocities(&mut self) {
-
-        // set q and r to zero for all cells
-        for row in &mut self.cells {
-            for cell in row {
-                cell.q *= 0.0;
-                cell.r *= 0.0;
-            }
-        }
-
+    // grid -> particle
+    fn g_p_transfer_velocities(&mut self) {
         for particle in &mut self.particles {
+            // transfer y component
             let h = self.cell_length;
             let local_p = Vec2::new(particle.position.x, particle.position.y - (h / 2.0));
-            let x_c = (local_p.x / h).floor();
-            let y_c = (local_p.y / h).floor();
-            let dx = local_p.x - x_c * h;
-            let dy = local_p.y - y_c * h;
+            let x_c = (local_p.x / h).floor() as usize;
+            let y_c = (local_p.y / h).floor() as usize;
 
-            let w = Vec4::new(
-                (1.0 - dx / h) * (1.0 - dy / h),
-                (dx / h)  * (1.0 - dy / h),
-                (dx / h) * (dy / h),
-                (1.0 -  dx / h) * (dy / h),
-            );
+            let dx = local_p.x - x_c as f32 * h;
+            let dy = local_p.y - y_c as f32 * h;
 
+            let mut w1 = (1.0 - dx / h) * (1.0 - dy / h);
+            let mut w2 = (dx / h)  * (1.0 - dy / h);
+            let mut w3 = (dx / h) * (dy / h);
+            let mut w4 = (1.0 -  dx / h) * (dy / h);
 
-            // deal with q maybe being undefined
-            // for every defined corner 
-            // sum w * q
-            // divide by sum of weights
-            let qp = self.cells[y_c as usize][x_c as usize].q.dot(w) / (w.x + w.y + w.z + w.w);
+            let mut v1 = self.velocities_y[y_c][x_c];
+            let mut v2 = self.velocities_y[y_c][x_c + 1];
+            let mut v3 = self.velocities_y[y_c + 1][x_c + 1];
+            let mut v4 = self.velocities_y[y_c + 1][x_c];
 
-            self.cells[x_c as usize][y_c as usize].r += w;
-            self.cells[x_c as usize][y_c as usize].q += w * qp;
-
-            if self.cells[x_c as usize][y_c as usize].kind == CellType::Air {
-                self.cells[x_c as usize][y_c as usize].kind = CellType::Water;
+            // check if non water cells, then dont include in subsequent calcs
+            if self.cells[y_c - 1][x_c - 1].kind != CellType::Water
+            || self.cells[y_c - 1][x_c].kind != CellType::Water 
+            || self.cells[y_c][x_c - 1].kind != CellType::Water {
+                v1 = 0.0; w1 = 0.0;
             }
-
-        }
-
-        for row in &mut self.cells {
-            for cell in row {
-                cell.q *= 1.0 / cell.r;
+            if self.cells[y_c - 1][x_c].kind != CellType::Water
+            || self.cells[y_c - 1][x_c + 1].kind != CellType::Water 
+            || self.cells[y_c][x_c + 1].kind != CellType::Water {
+                v2 = 0.0; w2 = 0.0;
             }
+            if self.cells[y_c][x_c + 1].kind != CellType::Water
+            || self.cells[y_c + 1][x_c + 1].kind != CellType::Water 
+            || self.cells[y_c + 1][x_c].kind != CellType::Water {
+                v3 = 0.0; w3 = 0.0;
+            }
+            if self.cells[y_c + 1][x_c].kind != CellType::Water
+            || self.cells[y_c + 1][x_c - 1].kind != CellType::Water 
+            || self.cells[y_c][x_c - 1].kind != CellType::Water {
+                v4 = 0.0; w4 = 0.0;
+            }
+            let vp = (v1 * w1 + v2 * w2 + v3 * w3 + v4 * w4) / (w1 + w2 + w3 + w4);
+
+            particle.velocity.y = vp;
+
+            //todo set cell types
         }
     }
 }
