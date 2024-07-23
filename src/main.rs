@@ -114,7 +114,6 @@ fn update(_app: &App, model: &mut Model, _update: Update) {
     model.scene.integrate_particles();
     model.scene.handle_collisions();
     model.scene.p_g_transfer_velocities();
-    // make incompressible
     model.scene.update_celltype();
     model.scene.g_p_transfer_velocities();
     // compute density
@@ -166,7 +165,7 @@ impl Scene {
 
         self.particle_radius = self.cell_length / 8.0;
 
-        // create initial dimensions of grids, ensuring its even
+        // create initial axiss of grids, ensuring its even
         self.grid.size.x = (inner_dimensions.0 / self.cell_length).floor() as u32; 
         if self.grid.size.x % 2 != 0 { self.grid.size.x -= 1; }
 
@@ -265,11 +264,11 @@ impl Scene {
     // grid -> particle
     fn g_p_transfer_velocities(&mut self) {
         for particle in &mut self.particles {
-            for dimension in 0..1 {
+            for axis in 0..=1 {
 
                 let h = self.cell_length;
 
-                let local_p = match dimension { 
+                let local_p = match axis { 
                     0 => Vec2::new(particle.position.x + (h / 2.0), particle.position.y),
                     _ => Vec2::new(particle.position.x, particle.position.y - (h / 2.0)),
                 };
@@ -286,25 +285,26 @@ impl Scene {
                 let mut w3 = (dx / h) * (dy / h);
                 let mut w4 = (1.0 -  dx / h) * (dy / h);
 
-                let mut v1 = match dimension {
+                let mut v1 = match axis {
                     0 => self.grid.get_val(c.x, c.y).velocity.x,
                     _ => self.grid.get_val(c.x, c.y).velocity.y,
                 };
-                let mut v2 = match dimension {
+                let mut v2 = match axis {
                     0 => self.grid.get_val(c.x + 1, c.y).velocity.x,
                     _ => self.grid.get_val(c.x + 1, c.y).velocity.y,
                 };
-                let mut v3 = match dimension {
+                let mut v3 = match axis {
                     0 => self.grid.get_val(c.x + 1, c.y + 1).velocity.x,
                     _ => self.grid.get_val(c.x + 1, c.y + 1).velocity.y,
                 };
-                let mut v4 = match dimension {
+                let mut v4 = match axis {
                     0 => self.grid.get_val(c.x, c.y + 1).velocity.x,
                     _ => self.grid.get_val(c.x, c.y + 1).velocity.y,
                 };
 
                 // check if non water cells, then dont include in subsequent calc
                 match c {
+                    // handle edge cases
                     c if c.x == 0 => {
                         v1 = 0.0; v4 = 0.0;
                         w1 = 0.0; w4 = 0.0;
@@ -321,22 +321,36 @@ impl Scene {
                         v3 = 0.0; v4 = 0.0;
                         w3 = 0.0; w4 = 0.0;
                     },
+                    c if c.x == 0 && c.y == 0 => {
+                        v1 = 0.0; v2 = 0.0; v4 = 0.0;
+                        w1 = 0.0; w2 = 0.0; w4 = 0.0;
+                    },
+                    c if c.x == self.grid.size.x && c.y == self.grid.size.y => {
+                        v2 = 0.0; v3 = 0.0; v4 = 0.0;
+                        w2 = 0.0; w3 = 0.0; w4 = 0.0;
+                    },
+                    // handle general case
                     _ => {
+                        // velocities stored counter clockwise from bottom left, starting at v1
+                        // check for v1
                         if self.grid.get_type(c.x - 1, c.y - 1) != CellType::Water
                         || self.grid.get_type(c.x, c.y - 1) != CellType::Water
                         || self.grid.get_type(c.x - 1, c.y) != CellType::Water {
                             v1 = 0.0; w1 = 0.0;
                         }
+                        // check for v2
                         if self.grid.get_type(c.x, c.y - 1) != CellType::Water
                         || self.grid.get_type(c.x + 1, c.y - 1) != CellType::Water
                         || self.grid.get_type(c.x + 1, c.y) != CellType::Water {
                             v2 = 0.0; w2 = 0.0;
                         }
+                        // check for v3
                         if self.grid.get_type(c.x + 1, c.y) != CellType::Water
                         || self.grid.get_type(c.x + 1, c.y + 1) != CellType::Water
                         || self.grid.get_type(c.x, c.y + 1) != CellType::Water {
                             v3 = 0.0; w3 = 0.0;
                         }
+                        // check for v4
                         if self.grid.get_type(c.x, c.y + 1) != CellType::Water
                         || self.grid.get_type(c.x - 1, c.y + 1) != CellType::Water
                         || self.grid.get_type(c.x - 1, c.y) != CellType::Water {
@@ -344,10 +358,10 @@ impl Scene {
                         }
                     },
                 }
+                let mut vp = (v1 * w1 + v2 * w2 + v3 * w3 + v4 * w4) / (w1 + w2 + w3 + w4);
+                if w1 + w2 + w3 + w4 == 0.0 { vp = 0.0; }
 
-                let vp = (v1 * w1 + v2 * w2 + v3 * w3 + v4 * w4) / (w1 + w2 + w3 + w4);
-
-                match dimension {
+                match axis {
                     0 => particle.velocity.x = vp,
                     _ => particle.velocity.y = vp,
                 };
@@ -364,10 +378,10 @@ impl Scene {
         }
         
         for particle in &mut self.particles {
-            for dimension in 0..1 {
+            for axis in 0..=1 {
                 let h = self.cell_length;
 
-                let local_p = match dimension { 
+                let local_p = match axis { 
                     0 => Vec2::new(particle.position.x + (h / 2.0), particle.position.y),
                     _ => Vec2::new(particle.position.x, particle.position.y - (h / 2.0)),
                 };
@@ -384,7 +398,7 @@ impl Scene {
                 let w3 = (dx / h) * (dy / h);
                 let w4 = (1.0 -  dx / h) * (dy / h);
 
-                match dimension {
+                match axis {
                     0 => {
                         self.grid.get_val_mut(c.x, c.y).velocity.x += w1 * particle.velocity.x;
                         self.grid.get_val_mut(c.x + 1, c.y).velocity.x += w2 * particle.velocity.x;
@@ -414,6 +428,19 @@ impl Scene {
         for y in 0..self.grid.size.y {
             for x in 0..self.grid.size.x {
                 self.grid.get_val_mut(x, y).velocity = self.grid.get_val(x, y).velocity / self.grid.get_val(x, y).weight;
+            }
+        }
+    }
+
+    fn solve_incompressiblity(&mut self) {
+        let iterations = 1;
+        for _ in 0..iterations {
+            for y in 0..self.grid.size.y {
+                for x in 0..self.grid.size.x {
+                    for axis in 0..=1 {
+
+                    }
+                }
             }
         }
     }
